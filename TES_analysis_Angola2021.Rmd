@@ -1,0 +1,676 @@
+---
+title: |
+  ![Angola TES 2021 Analysis](CDCletterhead.png){width=8in}   
+author: ""
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    number_sections: no
+    toc: no
+---
+
+```{r setup, include=FALSE}
+options(width = 120)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, collapse= TRUE)
+```
+<!-- ## Importation and processing of raw data sets -->
+
+<!-- The Excel databases were read and processed to extract the necessary variables. -->
+
+```{r, cache=TRUE, results = "hide"}
+require(XLConnect)
+require(stringr)
+require(gtools)
+#require(readxl)
+
+options(java.parameters = "- Xmx2048m")
+
+convertir_datas = function(y) {
+	# funcao para convertir datas
+   	if (length(y) > 1) {
+		ret = rep(NA,length(y))
+		for (i in 1:length(y)) {
+			if (!is.na(y[i])) {
+			if (nchar(y[i]) < 15) {
+				ret[i] = as.Date(y[i],format = "%d/%m/%Y")
+			} else {
+				ret[i] = as.Date(substr(y[i],1,10),format = "%Y-%d-%m")
+			}}
+		}
+	} else {
+		if (!is.na(y[i])) {
+		if (nchar(y) < 15) {
+			ret = as.Date(y,format = "%d/%m/%Y")
+		} else {
+			ret = as.Date(substr(y,1,10),format = "%Y-%d-%m")
+		}}
+    	}
+   	 ret
+}
+
+
+importar_dados_dos_ficheiros = function(nome_do_ficheiro, provincia,farmaco, duracao_seguimento) {
+
+	#dados1 = as.data.frame(read_excel(nome_do_ficheiro, sheet = "Dados1"))
+	excel_ficheiro <- loadWorkbook(nome_do_ficheiro)
+	dados1 = readWorksheet(excel_ficheiro, sheet = "Dados1")
+
+	if (duracao_seguimento == 28) {
+		dias = c("d1","d2","d3","d7","d14","d21","d28","dVNP1","dVNP2","dVNP3")
+		dias_hemo = c("tr","d14","d28","dVNP1","dVNP2","dVNP3")
+	} else {
+		dias = c("d1","d2","d3","d7","d14","d21","d28","d35","d42","dVNP1","dVNP2","dVNP3")
+		dias_hemo = c("tr","d14","d28","d42","dVNP1","dVNP2","dVNP3")
+	}
+
+	codigo = dados1$codigo
+	peso = dados1$tr_peso
+	peso = sub(",",".",peso)
+	dias_passados = sapply(c("d0",dias), function (x) convertir_datas(dados1[,colnames(dados1)==paste(x,"_data",sep="")])-convertir_datas(dados1$tr_data))
+
+	parasitemia1 = sapply(c("tr",dias), function (x) as.numeric(dados1[,colnames(dados1)==paste(x,"_para",sep="")]))
+	parasitemia2 = sapply(c("tr",dias), function (x) as.numeric(dados1[,colnames(dados1)==paste(x,"_segpara",sep="")]))
+	parasitemia = t(sapply(1:dim(parasitemia1)[1], function (x) c(colMeans(rbind(parasitemia1[x,],parasitemia2[x,]),na.rm=TRUE))))
+	outraespecie = sapply(c(dias), function (x) dados1[,colnames(dados1)==paste(x,"_outraespecie",sep="")])
+
+	dose_correcta = sapply(c("d0","d1","d2"), function (x) dados1[,colnames(dados1)==paste(x,"_correcta",sep="")])
+	vomitos = sapply(c("d0","d1","d2"), function (x) dados1[,colnames(dados1)==paste(x,"_vomitos",sep="")])
+	vomitos_noite = sapply(c("d1","d2","d3"), function (x) dados1[,colnames(dados1)==paste(x,"_doseanoite_vomitos",sep="")])
+	feverdia3 = dados1$d3_temp
+	feverdia3 = sub(",",".",feverdia3)
+	classificacao = dados1$final_classificacao
+	idade = dados1$tr_idade
+	sexo = dados1$tr_sexo
+	hemoglobina = sapply(c(dias_hemo), function (x) as.numeric(sub(",",".",
+									dados1[,colnames(dados1)==paste(x,"_hemo",sep="")])))
+	febre = sapply(c(dias), function (x) as.numeric(sub(",",".",
+									dados1[,colnames(dados1)==paste(x,"_histfebre",sep="")])))
+	temperatura = sapply(c("tr",dias), function (x) as.numeric(sub(",",".",
+									dados1[,colnames(dados1)==paste(x,"_temp",sep="")])))
+	datadeentrada=convertir_datas(dados1$tr_data)
+
+	dias_efeitoadverso = c("d1","d2","d3","dVNP1","dVNP2","dVNP3")
+	quaisefeitosadversos = c("vomitos","diarreia","enjoo","transpiracao","outro")
+	efeitoadverso = do.call(cbind,lapply(c(dias_efeitoadverso), function (x) sapply(quaisefeitosadversos, function (y)
+				dados1[,colnames(dados1)==paste(x,"_efeitoadverso_",y,sep="")])))
+	temp=expand.grid(1:length(quaisefeitosadversos),1:length(dias_efeitoadverso))
+	efeitosadversos_colnames = sapply(1:dim(temp)[1], function (x) paste("Efeito Adverso ", "Dia ", dias_efeitoadverso[temp[x,2]], " ", quaisefeitosadversos[temp[x,1]],sep=""))
+	
+	resumo = cbind(codigo,provincia,farmaco,datadeentrada,idade,sexo,peso,dose_correcta,vomitos,vomitos_noite,feverdia3,dias_passados,parasitemia,classificacao,outraespecie,hemoglobina,efeitoadverso,febre,temperatura)
+	colnames(resumo) = c("Codigo","Provincia","Farmaco","Data de entrada","Idade","Sexo","Peso","Dose D0","Dose D1","Dose D2",
+				   "Vomitos D0", "Vomitos D1", "Vomitos D2","Vomitos Noite D0", "Vomitos Noite D1", "Vomitos Noite D2",
+				   "Febre D3",
+				   paste("Dias",c("d0",dias)),
+				   paste("Parasitemia",c("d0",dias)),
+				   "Classificacao",
+				   paste("Outra Especie",c(dias)),
+				   paste("Hemoglobina",c("d0",dias_hemo[-1])),
+				   efeitosadversos_colnames,
+				   paste("Febre",c(dias)),
+				   paste("Temperatura",c("d0",dias)))
+	xlcFreeMemory()
+	resumo[!is.na(parasitemia[,1]),]
+}
+
+importar_dados_dos_ficheiros_triagem = function(nome_do_ficheiro, provincia,farmaco,sitio) {
+#	triagem1 = as.data.frame(read_excel(nome_do_ficheiro, sheet = "Triagem1"))
+	
+	excel_ficheiro <- loadWorkbook(nome_do_ficheiro)
+	triagem1 = readWorksheet(excel_ficheiro, sheet = "Triagem1")
+
+	triagem1$codigotriagem = paste(sitio,triagem1$codigotriagem,sep="-")
+	resumo = triagem1[!is.na(triagem1$idade),-which(colnames(triagem1) %in% "nome")]
+	resumo = cbind("Provincia" = as.character(provincia),"Farmaco" = as.character(farmaco), resumo)
+	resumo$Provincia = as.character(resumo$Provincia)
+	resumo$Farmaco = as.character(resumo$Farmaco)
+	xlcFreeMemory()
+	resumo
+}
+
+BP1 = importar_dados_dos_ficheiros("bases de dados/Base de PA Hospital Geral de Benguela 21_Out_2021 Final.xlsm","Benguela","PA",42)
+BP2 = importar_dados_dos_ficheiros("bases de dados/Base de PA Hospital Municipal de Benguela 21_Out_2021 Final.xlsm","Benguela","PA",42)
+BD1 = importar_dados_dos_ficheiros("bases de dados/Base de DP Hospital Geral de Benguela21_Out_2021Final.xlsm","Benguela","DP",42)
+BD2 = importar_dados_dos_ficheiros("bases de dados/Base de DP Hospital Municipal de Benguela 21_Out_2021Final..xlsm","Benguela","DP",42)
+ZL1 = importar_dados_dos_ficheiros("bases de dados/AL CENTRO MATERNO INFANTIL (ZAIRE)21Out_2021 BD_FINAL.xlsm","Zaire","AL",28)
+ZL2 = importar_dados_dos_ficheiros("bases de dados/AL HOSPITAL MUNICIPAL( ZAIRE)21_Out_2021 BD_FINAL.xlsm","Zaire","AL",28)
+ZQ1 = importar_dados_dos_ficheiros("bases de dados/ASAQ CENTRO MATERNO INFANTIL (ZAIRE)21_Out_2021 BD_FINAL.xlsm","Zaire","ASAQ",28)
+ZQ2 = importar_dados_dos_ficheiros("bases de dados/ASAQ HOSPITAL MUNICIPAL (ZAIRE)21_Out_2021 BD_FINAL _ updated.xlsm","Zaire","ASAQ",28)
+LL1 = importar_dados_dos_ficheiros("bases de dados/BD_Coartem(AL)_HOSPITAL MUNICIPAL (LUNDA SUL)21 Out21_Final.xlsm","Lunda Sul","AL",28)
+LL2 = importar_dados_dos_ficheiros("bases de dados/BD_Coartem(AL)_Txizainga (LUNDA SUL) 21Out021 Final.xlsm","Lunda Sul","AL",28)
+LQ1 = importar_dados_dos_ficheiros("bases de dados/BD_ASAQ HOSPITAL MUNICIPAL (LUNDA SUL)21Out021 Final.xlsm","Lunda Sul","ASAQ",28)
+LQ2 = importar_dados_dos_ficheiros("bases de dados/BD_ASAQ_Txizainga (LUNDA SUL)21Out021_Final.xlsm","Lunda Sul","ASAQ",28)
+
+
+
+dados = smartbind(BP1, BP2, BD1, BD2, ZL1, ZL2, ZQ1, ZQ2, LL1, LL2, LQ1, LQ2)
+
+## extract data for sample inventory
+
+sample_inventory = c()
+for (i in 1:dim(dados)[1]) {
+	newdata = cbind(dados$Codigo[i],dados$Provincia[i],dados$Farmaco[i],
+		t(dados[i,grepl("Parasitemia ",colnames(dados))]),t(dados[i,grepl("Dias ", colnames(dados))]))
+	sample_inventory = rbind(sample_inventory,newdata)
+}
+sample_inventory = sample_inventory[sample_inventory[,4] != "NaN",]
+
+write.csv(sample_inventory,"output/sample_inventory.csv")
+write.csv(dados,"output/AngolaTES2021_rawdata.csv")
+
+BP1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/Base de PA Hospital Geral de Benguela 21_Out_2021 Final.xlsm","Benguela","PA","HGB")
+BP2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/Base de PA Hospital Municipal de Benguela 21_Out_2021 Final.xlsm","Benguela","PA","HMB")
+BD1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/Base de DP Hospital Geral de Benguela21_Out_2021Final.xlsm","Benguela","DP","HGB")
+BD2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/Base de DP Hospital Municipal de Benguela 21_Out_2021Final..xlsm","Benguela","DP","HMB")
+ZL1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/AL CENTRO MATERNO INFANTIL (ZAIRE)21Out_2021 BD_FINAL.xlsm","Zaire","AL","CMI")
+ZL2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/AL HOSPITAL MUNICIPAL( ZAIRE)21_Out_2021 BD_FINAL.xlsm","Zaire","AL","HM")
+ZQ1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/ASAQ CENTRO MATERNO INFANTIL (ZAIRE)21_Out_2021 BD_FINAL.xlsm","Zaire","ASAQ","CMI")
+ZQ2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/ASAQ HOSPITAL MUNICIPAL (ZAIRE)21_Out_2021 BD_FINAL.xlsm","Zaire","ASAQ","HM")
+LL1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/BD_Coartem(AL)_HOSPITAL MUNICIPAL (LUNDA SUL)21 Out21_Final.xlsm","Lunda Sul","AL","LUA")
+LL2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/BD_Coartem(AL)_Txizainga (LUNDA SUL) 21Out021 Final.xlsm","Lunda Sul","AL","TXI")
+LQ1_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/BD_ASAQ HOSPITAL MUNICIPAL (LUNDA SUL)21Out021 Final.xlsm","Lunda Sul","ASAQ","LUA")
+LQ2_triagem = importar_dados_dos_ficheiros_triagem("bases de dados/BD_ASAQ_Txizainga (LUNDA SUL)21Out021_Final.xlsm","Lunda Sul","ASAQ","TXI")
+
+dados_triagem = smartbind(BP1_triagem, BP2_triagem, BD1_triagem, BD2_triagem, ZL1_triagem, ZL2_triagem, ZQ1_triagem, ZQ2_triagem, LL1_triagem, LL2_triagem, LQ1_triagem, LQ2_triagem)
+
+
+write.csv(dados_triagem,"base_de_dados_triagem.csv")
+
+## merge with manual classification (from revisao_files)
+
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Benguela ASAQ.xlsx")
+#Benguela_ASAQ = readWorksheet(excel_ficheiro, sheet = "AL")
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Benguela DP.xlsx")
+#Benguela_DP = readWorksheet(excel_ficheiro, sheet = "AL")
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Lunda Sul DP.xlsx")
+#LundaSul_DP = readWorksheet(excel_ficheiro, sheet = "AL")
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Lunda Sul AL.xlsx")
+#LundaSul_AL = readWorksheet(excel_ficheiro, sheet = "AL")
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Zaire AL.xlsx")
+#Zaire_AL = readWorksheet(excel_ficheiro, sheet = "AL")
+#excel_ficheiro <- loadWorkbook("bases de dados/manual revisions/Zaire ASAQ- newer data.xlsx")
+#Zaire_ASAQ = readWorksheet(excel_ficheiro, sheet = "AL")
+
+#manualclassificacao = rbind(Benguela_ASAQ[,c("Codigo","Classificacao.Manual","Commentarios")],
+#				    Benguela_DP[,c("Codigo","Classificacao.Manual","Commentarios")],
+#				    Zaire_AL[,c("Codigo","Classificacao.Manual","Commentarios")],
+#				    Zaire_ASAQ[,c("Codigo","Classificacao.Manual","Commentarios")],
+#				    LundaSul_AL[,c("Codigo","Classificacao.Manual","Commentarios")],
+#				    LundaSul_DP[,c("Codigo","Classificacao.Manual","Commentarios")])
+
+#dados = cbind(dados,classificacao_manual = manualclassificacao$Classificacao.Manual[match(dados[,which(colnames(dados)=="Codigo")],manualclassificacao$Codigo)],
+#			  comentarios = manualclassificacao$Commentarios[match(dados[,which(colnames(dados)=="Codigo")],manualclassificacao$Codigo)])
+
+dados = dados[!is.na(dados$Codigo),]
+
+manualclassificacao = rep(NA,dim(dados)[1])
+manualclassificacao[grepl("ACPR_8",dados$Classificacao)] = "RCPA"
+manualclassificacao[grepl("infraccao",dados$Classificacao)] = "exclusao, censor"
+manualclassificacao[grepl("grave_sem_para_4",dados$Classificacao)] = "exclusao, censor"
+manualclassificacao[grepl("abandono",dados$Classificacao)] = "abandono, censor"
+manualclassificacao[grepl("outra_especie",dados$Classificacao)] = "exclusao, censor"
+manualclassificacao[grepl("FT",dados$Classificacao)] = "FTT"
+manualclassificacao[grepl("FTP",dados$Classificacao)] = "FTP"
+
+## fix one classification that was incorrectly labeled FTT (monoinfection with non-falciparum)
+manualclassificacao[dados$Codigo == "LL21-079"] = "exclusao, censor"
+
+## fix classification of BP21-228 who was missing but was censored
+manualclassificacao[dados$Codigo == "BP21-228"] = "abandono, censor"
+
+## fix day 0 parasitemia for patient ZQ21-010 (digitization error) 
+dados[dados$Codigo == "ZQ21-010","Parasitemia d0"] = 67867
+
+View(dados[which(grepl("outra_especie",dados$Classificacao) & grepl("FT",dados$Classificacao)),])
+
+dados = cbind(dados,classificacao_manual = manualclassificacao)
+# change coding of treatment failures
+
+rownames(dados) = dados[,which(colnames(dados)=="Codigo")]
+dados = as.data.frame(dados)
+
+	dias_efeitoadverso = c("d1","d2","d3","dVNP1","dVNP2","dVNP3")
+	quaisefeitosadversos = c("vomitos","diarreia","enjoo","transpiracao","outro")
+	temp=expand.grid(1:length(quaisefeitosadversos),1:length(dias_efeitoadverso))
+	efeitosadversos_colnames = sapply(1:dim(temp)[1], function (x) paste("Efeito Adverso ", "Dia ", dias_efeitoadverso[temp[x,2]], " ", quaisefeitosadversos[temp[x,1]],sep=""))
+
+numericvariables = colnames(dados)[!colnames(dados)%in%c("Codigo","Provincia","Farmaco","Sexo","classificacao_manual","comentarios",
+									   "Vomitos D0","Vomitos D1","Vomitos D2","Vomitos D1", "Vomitos D2",
+									   "Vomitos Noite D0", "Vomitos Noite D1", "Vomitos Noite D2","Classificacao",efeitosadversos_colnames)]
+dados[,numericvariables] = sapply(numericvariables,function (x) as.numeric(as.character(dados[,x])))
+
+
+#### exclude information from excluded participants
+#### there are two types of excluded participants... those that don't contribute any data (due to protocol violations, incorrect dose etc),
+#### and also those that contribute information up to a certain time. These are coded as "censor dX" in the database, where X is the last day contributing data
+#### need to input NAs for all parasitemias, days passed, and hemoglobin for first type of excluded participants
+#### and NAs for all days passed after the last day for the other kind of excluded participant
+
+complete_exclusions = which(grepl("exclusao",dados$classificacao_manual) & !grepl("censor",dados$classificacao_manual))
+dados_corrected = dados
+sapply(complete_exclusions, function (y) dados_corrected[y,
+			   which(grepl("Parasitemia",colnames(dados)))[which(dados[y,grep("Dias",colnames(dados))]>0)]] <<- NA)
+sapply(complete_exclusions, function (y) dados_corrected[y,
+			   which(grepl("Dias",colnames(dados)))[which(dados[y,grep("Dias",colnames(dados))]>0)]] <<- NA)
+sapply(complete_exclusions, function (y) dados_corrected[y,
+			   which(grepl("Hemoglobina",colnames(dados)))[-1]] <<- NA)
+sapply(complete_exclusions, function (y) dados_corrected[y,
+			   which(grepl("Temperatura",colnames(dados)))[which(dados[y,grep("Dias",colnames(dados))]>0)]] <<- NA)
+sapply(complete_exclusions, function (y) dados_corrected[y,
+			   which(grepl("Febre",colnames(dados)))[which(dados[y,grep("Dias",colnames(dados))]>0)-1]] <<- NA)
+
+#sapply(complete_exclusions, function (y) dados_corrected[y,
+#			   which(grepl("Vomitos",colnames(dados)))[-1]] <<- NA)
+
+censored_exclusions = which(grepl("exclusao",dados$classificacao_manual) & grepl("censor D",dados$classificacao_manual))
+ultimodia_censor = sapply(dados$classificacao_manual[censored_exclusions], function (x) as.numeric(strsplit(as.character(x), "censor D")[[1]][2]))
+
+
+## add molecular correction results
+
+bayesian_results = read.csv("molecular correction\\ensemble_probability_of_recrudescence.csv")
+Prob_Recr = bayesian_results$Consensus[match(dados$Codigo,bayesian_results$ID)]
+## check cbind(dados$Codigo[dados$classificacao_manual %in% c("FTT")],Prob_Recr[dados$classificacao_manual %in% c("FTT")])
+## check Prob_Recr[!(dados$classificacao_manual %in% c("FTT"))]
+Prob_Recr[dados$classificacao_manual %in% c("FTP")] = 1 #### temporary
+dados = cbind(dados,Prob_Recr)
+
+# sapply(1:length(censored_exclusions), function (y) dados_corrected[censored_exclusions[y],
+# 			   which(grepl("Parasitemia",colnames(dados)))[which(dados[censored_exclusions[y],grep("Dias",colnames(dados))]>ultimodia_censor[y])]] <<- NA)
+# sapply(1:length(censored_exclusions), function (y) dados_corrected[censored_exclusions[y],
+# 			   which(grepl("Dias",colnames(dados)))[which(dados[censored_exclusions[y],grep("Dias",colnames(dados))]>ultimodia_censor[y])]] <<- NA)
+# sapply(1:length(censored_exclusions), function (y) dados_corrected[censored_exclusions[y],
+# 			   which(grepl("Hemoglobina",colnames(dados)))[which(dados[censored_exclusions[y],grep("Dias",colnames(dados))][c(1,6,8,10,11,12,13)]>ultimodia_censor[y])]] <<- NA)
+# sapply(1:length(censored_exclusions), function (y) dados_corrected[censored_exclusions[y],
+# 			   which(grepl("Temperatura",colnames(dados)))[which(dados[censored_exclusions[y],grep("Dias",colnames(dados))]>ultimodia_censor[y])]] <<- NA)
+# sapply(1:length(censored_exclusions), function (y) dados_corrected[censored_exclusions[y],
+# 			   which(grepl("Febre",colnames(dados)))[which(dados[censored_exclusions[y],grep("Dias",colnames(dados))]>ultimodia_censor[y])]] <<- NA)
+
+write.csv(dados,"base_de_dados_completa.csv")
+
+
+```
+
+<!-- ## Samples for molecular correction -->
+
+<!-- All Day 0 samples and Day of Failure samples from late treatment failures were chosen for molecular correction. -->
+
+```{r samples, include = FALSE}
+
+samples_day0 = 1:dim(dados)[1] ## all Day 0 samples
+samples_dayoffailure = grep("FTT",dados$classificacao_manual)
+dayspassed= dados[,grepl("Dias",colnames(dados))]
+lastvisit = apply(dayspassed,1,function (x) max(x,na.rm=TRUE))
+whichlastvisit = apply(dayspassed,1,function (x) which.max(x))[samples_day0]
+lastparasitemia_all = sapply(1:dim(dados)[1], function (x) unlist(dados[x,grepl("Parasitemia",colnames(dados))][whichlastvisit[[x]]])) 
+
+non_failures = setdiff(samples_day0,samples_dayoffailure)
+non_failures_data = cbind(dados$Codigo[non_failures], dados$classificacao_manual[non_failures], lastvisit[non_failures],(lastparasitemia_all[non_failures]))
+#View(non_failures_data[non_failures_data[,4]!=0,])
+
+lastparasitemia = sapply(samples_dayoffailure, function (x) dados[x,grepl("Parasitemia",colnames(dados))][whichlastvisit[[x]]]) # for treatment failures
+whichlastvisitHb = sapply(1:dim(dados)[1],function (x) max(which(!is.na(dados[x,grepl("Hemoglobina",colnames(dados))]))))
+lastvisitHb = sapply(samples_dayoffailure,function (x) dados[x,grepl("Hemoglobina",colnames(dados))][whichlastvisitHb[[x]]]) # for treatment failures
+
+allsamples = c(samples_day0,samples_dayoffailure)
+inventory_table = cbind(1:length(allsamples), dados$Codigo[allsamples],"", c(rep(0,length(samples_day0)),lastvisit[samples_dayoffailure]),
+                       as.character(c(as.Date(dados$`Data de entrada`[samples_day0],origin="1970-01-01"),as.Date(dados$`Data de entrada`[samples_dayoffailure]+lastvisit[samples_dayoffailure],origin="1970-01-01"))),dados$Provincia[allsamples],dados$Farmaco[allsamples],"P. falciparum",
+                       c(dados[samples_day0,"Parasitemia d0"],lastparasitemia),"",dados$Provincia[allsamples],"DBS","2021-11-15","Samaly Svigel","Angola","NMCP",dados$Sexo[allsamples],dados$Idade[allsamples],c(dados$`Hemoglobina d0`[samples_day0],lastvisitHb))
+
+### sort so paired samples occur at beginning
+samples_dayoffailure_codes = dados$Codigo[grep("FTT",dados$classificacao_manual)]
+sortvariable = paste(inventory_table[,2],inventory_table[,4])
+sortvariable[inventory_table[,2] %in% samples_dayoffailure_codes] = paste("0_",sortvariable[inventory_table[,2] %in% samples_dayoffailure_codes],sep="")
+inventory_table = inventory_table[order(sortvariable),]
+inventory_table[,1] = 1:dim(inventory_table)[1]
+
+write.csv(inventory_table,"output/Angola_inventory.csv")
+
+```
+
+
+## Definition of study arms
+
+All indicators were calculated stratifying by drug and site:
+
+* **Benguela**, Pyronaridine artesunate (PA)
+* **Benguela**, Dihydroartemisinin piperaquine (DP)
+* **Zaire**, Artemether lumefantrine (AL)
+* **Zaire**, Artesunate amodiaquine (ASAQ)
+* **Lunda Sul**, Artemether lumefantrine (AL)
+* **Lunda Sul**, Artesunate amodiaquine (ASAQ)
+
+```{r arms}
+arms = list(which(dados$Provincia == "Benguela" & dados$Farmaco == "PA"),
+		which(dados$Provincia == "Benguela" & dados$Farmaco == "DP"),
+		which(dados$Provincia == "Zaire" & dados$Farmaco == "AL"),
+		which(dados$Provincia == "Zaire" & dados$Farmaco == "ASAQ"),
+		which(dados$Provincia == "Lunda Sul" & dados$Farmaco == "AL"),
+		which(dados$Provincia == "Lunda Sul" & dados$Farmaco == "ASAQ")) 
+
+arms_triagem = list(which(dados_triagem$Provincia == "Benguela" & dados_triagem$Farmaco == "PA"),
+		which(dados_triagem$Provincia == "Benguela" & dados_triagem$Farmaco == "DP"),
+		which(dados_triagem$Provincia == "Zaire" & dados_triagem$Farmaco == "AL"),
+		which(dados_triagem$Provincia == "Zaire" & dados_triagem$Farmaco == "ASAQ"),
+		which(dados_triagem$Provincia == "Lunda Sul" & dados_triagem$Farmaco == "AL"),
+		which(dados_triagem$Provincia == "Lunda Sul" & dados_triagem$Farmaco == "ASAQ"))
+
+## for appropriate labeling of tables
+arm_names_drug = c("PA","DP","AL","ASAQ","AL","ASAQ")
+arm_names_province = c("Benguela","Zaire","Lunda Sul")
+
+arm_duration = rep(28,length(arms))
+arm_duration[grepl("DP",arm_names_drug) | grepl("PA",arm_names_drug)] = 42
+
+library(leaflet)
+library(htmltools)
+## site table
+sitetable = matrix("",length(arms),4)
+sitetable[1,] = c("Benguela",-12.5906892,13.3614925,"<b>Benguela</b><br/>PA and DP")
+sitetable[2,] = c("Zaire",-6.2698899,14.2208145,"<b>Zaire</b><br/>AL and ASAQ")
+sitetable[3,] = c("Lunda Sul",-9.6708543,20.3704755,"<b>Lunda Sul</b><br/>AL and ASAQ")
+sitetable = as.data.frame(sitetable)
+colnames(sitetable) = c("labels","latdata","longdata","popup_text")
+leaflet() %>% addTiles() %>% 
+  addAwesomeMarkers(lat=as.numeric(sitetable$latdata),lng=as.numeric(sitetable$longdata), label = sitetable$labels,popup=(sitetable$popup_text))
+
+```
+
+## Patients enrolled and reaching study outcome and participant characteristics at baseline
+
+The number of patients screened, enrolled, excluded, and lost to follow up were tabulated. Participant characteristics at baseline were summarized by study arm. Combined lost to follow up and exclusion rates were below 10% for all study arms, and the number of participants reaching a study endpoint ranged from 91 to 104.
+
+```{r endpoint}
+table_endpoint = matrix("",5,length(arms))
+library(stringr)
+addpercent = function(x,y) {
+	paste(x," (",str_trim(format(100*x/y,digits=1)),")",sep = "")
+}
+# screened
+
+table_endpoint[1,] = t(sapply(arms_triagem, function (x) dim(dados_triagem[x,])[1]))
+
+# enrolled
+table_endpoint[2,] = t(sapply(arms, function (x) dim(dados[x,])[1]))
+# loss to follow up
+table_endpoint[3,] = addpercent(t(sapply(arms, function (x) sum(grepl("abandono",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) dim(dados[x,])[1])))
+table_endpoint[4,] = addpercent(t(sapply(arms, function (x) sum(grepl("exclusao",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) dim(dados[x,])[1])))
+table_endpoint[5,] = addpercent(t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))),
+					  t(sapply(arms, function (x) dim(dados[x,])[1])))
+
+rownames(table_endpoint) = c("Total screened","Total enrolled","Loss to Follow up","Exclusion","Reached study endpoint")
+
+write.csv(table_endpoint,"output/table_samplesize.csv")
+
+table_demographics = matrix("",7,length(arms))
+# n
+
+# those correctly enrolled:
+correctlyenrolled = !(grepl("criterios", dados$classificacao_manual))
+# idade median (range)
+table_demographics[2,] = t(sapply(arms, function (x) paste(format(median(dados$Idade[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),digits=2)," (",format(range(dados$Idade[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[1],digits=1),"-",format(range(dados$Idade[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[2],digits=1),")",sep="")))
+# peso median (range)
+table_demographics[3,] = t(sapply(arms, function (x) paste(format(median(dados$Peso[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),digits=2)," (",format(range(dados$Peso[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[1],digits=1),"-",format(range(dados$Peso[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[2],digits=1),")",sep="")))
+# percent female 
+
+table_demographics[4,] = t(sapply(arms, function (x) paste(format(100*sum(dados$Sexo[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))]=="F")/(sum(dados$Sexo[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))]=="F")+sum(dados$Sexo[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))]=="M")),digits=2),"%",sep="")))
+# day 0 parasitemia
+table_demographics[5,] = t(sapply(arms, function (x) paste(format(median(dados$"Parasitemia d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))]),digits=2)," (",format(range(dados$"Parasitemia d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))])[1],digits=1),"-",format(range(dados$"Parasitemia d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))])[2],scientific=FALSE,digits=2),")",sep="")))
+# day 0 hemoglobin
+table_demographics[6,] = t(sapply(arms, function (x) paste(format(median(dados$"Hemoglobina d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),digits=3)," (",format(range(dados$"Hemoglobina d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[1],digits=3),"-",format(range(dados$"Hemoglobina d0"[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE)[2],scientific=FALSE,digits=3),")",sep="")))
+# start and end of follow-up
+table_demographics[7,] = sapply(arms, function (x) paste(substr(months(as.Date(min(dados$`Data de entrada`[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),origin="1970-01-01")),1,3),"'",substr(as.character(as.Date(min(dados$`Data de entrada`[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),origin="1970-01-01")),3,4),"-",substr(months(as.Date(max(dados$`Data de entrada`[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),origin="1970-01-01")),1,3),"'",substr(as.character(as.Date(min(dados$`Data de entrada`[intersect(x,which(!(grepl("criterios", dados$classificacao_manual))))],na.rm=TRUE),origin="1970-01-01")),3,4),sep=""))
+  
+  
+
+rownames(table_demographics) = c("Participant characteristics at baseline","Median Age","Median weight", "% Female","Baseline parasite density","Baseline hemoglobin","Months of enrollment")
+write.csv(table_demographics,"output/table_demographics.csv")
+
+table_endpointanddemographics = rbind(table_endpoint,table_demographics)
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+library(kableExtra)
+
+kbl(table_endpointanddemographics, caption = "Table 1. Number of participants screened, enrolled, and finishing follow-up and characteristics at baseline as part of therapeutic efficacy monitoring in Angola, 2021", escape=FALSE) %>%
+# add_indent(c(2:12,14:17,19:24), level_of_indent = 1) %>%
+  add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F)  %>%
+  add_indent(c(3:5,7:12), level_of_indent = 1, all_cols = FALSE) %>%
+  footnote(general="PA: Pyronaridine artesunate; DP: Dihydroartemisinin piperaquine; AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+```
+
+
+## Slide positivity on Day 3
+
+The proportion of slides negative on Day 2 and Day 3 were calculated. Day 2 positivity ranged from 74 to 94%, while Day 3 positivity was above 98% for all study sites and arms.
+
+```{r clearance}
+table_clearance = matrix("",2,2*length(arms))
+
+fractionandpercent = function(x,y) {
+	#paste(x,"/",y," (",str_trim(format(100*x/y,digits=1)),"%)",sep = "")
+	proportionobject = prop.test(x,y)
+	c(paste(x,"/",y), paste(str_trim(format(100*proportionobject$est,digits=1)), " (",str_trim(format(100*proportionobject$conf[1],digits=1)),
+			"-",str_trim(format(100*proportionobject$conf[2],digits=1)),")",sep = ""))
+}
+
+table_clearance[1,] = sapply(arms, function (x) fractionandpercent(sum(dados[x,"Parasitemia d2"]==0,na.rm=TRUE),
+											  sum(!is.na(dados[x,"Parasitemia d2"]))))
+table_clearance[2,] = sapply(arms, function (x) fractionandpercent(sum(dados[x,"Parasitemia d3"]==0,na.rm=TRUE),
+											  sum(!is.na(dados[x,"Parasitemia d3"]))))
+rownames(table_clearance) = c("Day 2 slide negativity","Day 3 slide negativity")
+
+
+write.csv(table_clearance,"output/table_clearance.csv")
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(2,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+kbl(table_clearance, caption = "Table 2. Proportion of slides negative for asexual malaria parasites on day 2 and 3 following antimalarial treatment, therapeutic efficacy monitoring in Angola, 2021",escape=FALSE) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F) %>%
+  footnote(general="PA: Pyronaridine artesunate; DP: Dihydroartemisinin piperaquine; AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+
+```
+
+## Safety
+
+The proportion of study participants reporting adverse events was calculated. Rates of reported side effects were low (<1%) across all study sites and arms.
+
+```{r safety} 
+addpercent = function(x,y) {
+	paste(x," (",str_trim(format(100*x/y,digits=1)),")",sep = "")
+}
+
+quaisefeitosadversos = c("vomitos","diarreia","enjoo","transpiracao")
+table_safety = matrix(NA,length(quaisefeitosadversos)+1,length(arms))
+table_safety[1,] = paste("n=",t(sapply(arms, function (x) dim(dados[x,])[1])),sep="")
+
+table_safety[-1,] = t(sapply(quaisefeitosadversos, function (y) addpercent(t(sapply(arms, function (x) sum(as.numeric(unlist(dados[x,grepl("Efeito Adverso",colnames(dados)) & grepl(y,colnames(dados))])),na.rm=TRUE))),
+					  t(sapply(arms, function (x) dim(dados[x,])[1])))))
+
+#table(unlist(dados[,grepl("Efeito Adverso",colnames(dados)) & grepl("outro",colnames(dados))]))
+rownames(table_safety) = c("","Vomiting","Diarrhea","Nauseau","Sweating")
+
+write.csv(table_safety,"output/table_safety.csv")
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+kbl(table_safety, caption = "Table 3. Prevalence of adverse events reported after  antimalarial treatment, therapeutic efficacy monitoring in Angola, 2021",escape=FALSE) %>%
+  add_header_above(secondrow_labels) %>%
+  add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F) %>%
+  footnote(general="PA: Pyronaridine artesunate; DP: Dihydroartemisinin piperaquine; AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+
+```
+
+## Participant outcomes
+
+Participants' outcomes were classified according the WHO guidance for antimalarial efficacy trials:
+
+* **Early Treatment Failure**
+  + Danger signs or severe malaria on day 1, 2, or 3 in the presence of parasitemia
+  + A parasitemia on day 2 higher than day 0
+  + Axillary temperature ≥ 37.5 °C on day 3 in the presence of parasitemia
+  + Parasitemia on day 3 ≥ 25% of day 0 parasitemia
+* **Late Treatment Failure**
+  + *Recrudescence*
+    - Danger signs, signs of severe malaria, or axillary temperature > 37.5 °C in the presence of parasitemia (with a parasite with the same genotype as day 0) on any day between day 4 and day 28 in patients who did not previously meet any of the criteria of early treatment failure
+    - Presence of parasitemia (with a parasite with the same genotype as day 0) on any day between day 7 and day 28 regardless of temperature in patients who did not previously meet any of the criteria of early treatment failure
+  + *Reinfection*
+    - Same definition as recrudescence, but with a parasite with a different genotype on day of failure and day 0
+* **Adequate Clinical and Parasitological Response**
+  + Absence of parasitemia on day 28, irrespective of axillary temperature, in patients who did not previously meet any of the criteria of early treatment failure, late clinical failure, reinfection or late parasitological failure.
+
+Participant outcomes were tabulated stratifying by study arm. Amongst participants reaching a study endpoint, there were a total of 4 early treatment failures and 71 cases of recurrent parasitemia after Day 7 (late treatment failures). Of the 71 late treatment failures, 1 sample from the Benguela PA arm was classified as indeterminate due to a missing sample, 24 infections were classified as recrudescences, and 46 infections were classified as new infections. 
+
+
+```{r}
+
+
+dayspassed= dados[,grepl("Dias",colnames(dados))]
+lastvisit = apply(dayspassed,1,function (x) max(x,na.rm=TRUE))
+secondtolastvisit = (sapply(1:dim(dados)[1],function (x) sort(dayspassed[x,])[length(sort(dayspassed[x,]))-1]))
+secondtolastvisit[lastvisit == 0] = 0
+secondtolastvisit = unlist(secondtolastvisit)
+failure_uncorrected = grepl("FT",dados[,"classificacao_manual"])
+
+
+microsatellite_correction = rep(NA,dim(dados)[1])
+microsatellite_correction[dados$Prob_Recr>0.5] = "Recrudescence"
+microsatellite_correction[dados$Prob_Recr<=0.5] = "Reinfection"
+microsatellite_correction[grepl("FTT",dados[,"classificacao_manual"],ignore.case = TRUE) & is.na(dados$Prob_Recr)] = "Indeterminate"
+write.csv(cbind(dados,microsatellite_correction),"output/base_de_dados_completa_correction.csv")
+
+
+addpercent = function(x,y) {
+	paste(x," (",str_trim(format(100*x/y,digits=1)),")",sep = "")
+}
+
+table_endpoint= matrix("",19,6)
+table_endpoint[1,] = paste("n=",t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))),sep="")
+table_endpoint[2,] = addpercent(t(sapply(arms, function (x) sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[3,] = addpercent(t(sapply(arms, function (x) sum(grepl("FTP",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[4,] = addpercent(t(sapply(arms, function (x) sum(grepl("FTT",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[5,] = addpercent(t(sapply(arms, function (x) sum(grepl("FTT",dados[x,"classificacao_manual"],ignore.case = TRUE) & microsatellite_correction[x] == "Recrudescence"))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[6:11,] = t(sapply(c(7,14,21,28,35,42), function (y) addpercent(t(sapply(arms, function (x) sum(grepl("FTT",dados[x,"classificacao_manual"],ignore.case = TRUE) & lastvisit[x] <= y+2 & lastvisit[x] >= y-2 & microsatellite_correction[x] == "Recrudescence"))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))))
+table_endpoint[12,] = addpercent(t(sapply(arms, function (x) sum(grepl("FTT",dados[x,"classificacao_manual"],ignore.case = TRUE) & microsatellite_correction[x] == "Reinfection"))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[13:18,] = t(sapply(c(7,14,21,28,35,42), function (y) addpercent(t(sapply(arms, function (x) sum(grepl("FTT",dados[x,"classificacao_manual"],ignore.case = TRUE) & lastvisit[x] <= y+2 & lastvisit[x] >= y-2 & microsatellite_correction[x] == "Reinfection"))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))))
+table_endpoint[19,] = addpercent(t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE)))),
+					  t(sapply(arms, function (x) sum(grepl("RCPA",dados[x,"classificacao_manual"],ignore.case = TRUE))+sum(grepl("FT",dados[x,"classificacao_manual"],ignore.case = FALSE)))))
+table_endpoint[table_endpoint == "0 (0)"] = "0"
+rownames(table_endpoint) = c("","Treatment failure","Early treatment failure","Late treatment failure","Recrudescence","Day 7","Day 14","Day 21","Day 28","Day 35","Day 42",
+                                                                                                    "Reinfection","Day 7", "Day 14","Day 21","Day 28","Day 35","Day 42",
+                             "Adequate clinical and parasitological response")
+write.csv(table_endpoint,"output/table_endpoint.csv")
+
+firstrow_labels = (c(" ", rep(2,length(arm_names_province))))
+names(firstrow_labels) = c("",arm_names_province)
+secondrow_labels = (c(" ", rep(1,length(arm_names_drug))))
+names(secondrow_labels) = c("",arm_names_drug)
+
+table_endpoint[c(10:11,17:18),arm_duration == 28] = ""
+
+kbl(table_endpoint, caption = "Table 4. Treatment outcomes for participants finishing follow-up as part of therapeutic efficacy monitoring in Angola, 2021",escape=F) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F) %>%
+  add_indent(c(3:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  add_indent(c(5:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  add_indent(c(6:11,13:18), level_of_indent = 1, all_cols = FALSE)  %>%
+  footnote(general="*Confidence intervals are undefined\n1 late treatment failure from the Benguela PA arm was indeterminate for PCR correction (sampling missing)\nPA: Pyronaridine artesunate; DP: Dihydroartemisinin piperaquine; AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+```
+
+
+## Primary and secondary efficacy indicators
+
+Uncorrected and corrected efficacy estimates were calculated using the Kaplan-Meier estimate of the survival function and a posterior probability generated from Bayesian analysis of genotyping data. For study arms with a 42-day follow up, efficacies at both Day 28 (a secondary indicator) and Day 42 (the primary indicator) were calculated. Uncorrected Day-28 efficacies ranged from 77.1% (95% CI: 69-86) in Zaire for AL to 100% for ASAQ in Lunda Sul. Day 42-uncorrected efficacy was 87.2% (81–94) for PA and 94.2% (90–99) for DP, both in Benguela. After PCR correction, AL efficacy was 88.0% (82-95) in Zaire and 94.7% (90-99) in Lunda Sul. For ASAQ, efficacy was 92.0% (87-98) in Zaire and 100% in Lunda Sul. Corrected Day 42 efficacy was 99.6% (99-100) for PA and 98.3% (96-100) for DP. 
+
+```{r}
+library(survival)
+outcome_uncorrected=rep(0,length(dados$Classificacao))
+outcome_uncorrected[dados$classificacao_manual %in% c("FTT")] = 1
+outcome_uncorrected[dados$classificacao_manual %in% c("FTP")] = 1
+
+lastvisit_uncorrected = lastvisit
+dados$outcome = outcome_uncorrected
+dados$lastvisit = lastvisit_uncorrected
+dados$Prob_Recr[is.na(dados$Prob_Recr)]=0
+
+#cbind(dados$Prob_Recr,dados$Codigo)
+
+
+fitKM = function(lastvisit,outcome,trial_duration) {
+	survivaldata = Surv(lastvisit,outcome)
+	km_model = survfit(survivaldata~1,conf.lower = "peto")
+	km_estimate = summary(km_model,times=trial_duration)$surv*100
+	km_loCI = summary(km_model,times=trial_duration)$lower*100
+	km_upCI = summary(km_model,times=trial_duration)$upper*100
+	c(km_estimate,km_loCI,km_upCI)
+}
+bootstrap_KM = function(data,missingvalue,trial_duration) {
+	posteriorprob = data$Prob_Recr
+	posteriorprob[is.na(posteriorprob)] = missingvalue 
+	if (sum(posteriorprob) > 0) {
+		simulated_outcome_matrix = t(sapply(posteriorprob , function (x) sample(c(0,1), nruns, replace = TRUE, prob = c(1-x,x))))
+		km_estimated = sapply(1:nruns, function (x) fitKM(data$lastvisit,simulated_outcome_matrix[,x],trial_duration))
+		result = 	c(mean(km_estimated[1,]), mean(km_estimated[2,]), mean(km_estimated[3,]))
+	} else {
+		result = c(100,100,100)
+	}
+	paste(format(result[1],digits=3)," (",format(result[2],digits=2),"-",format(result[3],digits=2),")",sep="")
+}
+
+survivaldata_uncorrected = sapply(arms, function (x) Surv(lastvisit_uncorrected[x],outcome_uncorrected[x]))
+km_uncorrected = lapply(survivaldata_uncorrected,function (x) survfit(x~1,conf.lower = "peto"))
+survival_uncorrected_28 = sapply(1:length(arms),function (x) paste(format(summary(km_uncorrected[[x]],times=28)$surv*100, digits=3)," (",format(summary(km_uncorrected[[x]],times=28)$lower*100, digits=2),"–",format(summary(km_uncorrected[[x]],times=28)$upper*100, digits=2),")",sep=""))
+survival_uncorrected_42 = sapply((1:length(arms))[which(arm_duration==42)],function (x) paste(format(summary(km_uncorrected[[x]],times=42)$surv*100, digits=3)," (",format(summary(km_uncorrected[[x]],times=42)$lower*100, digits=2),"–",format(summary(km_uncorrected[[x]],times=42)$upper*100, digits=2),")",sep=""))
+
+nruns= 2000
+mean_posteriorprob = mean(dados$Prob_Recr[dados$classificacao_manual %in% c("FTT")],na.rm=TRUE)
+survival_corrected_28 = sapply(1:length(arms),function (x) bootstrap_KM(dados[arms[[x]],],mean_posteriorprob,28))
+survival_corrected_42 = sapply((1:length(arms))[which(arm_duration==42)],function (x) bootstrap_KM(dados[arms[[x]],],mean_posteriorprob,42))
+
+tables_efficacy = matrix("",6,length(arms))
+tables_efficacy[2,] = survival_uncorrected_28
+tables_efficacy[3,arm_duration == 42] = survival_uncorrected_42
+tables_efficacy[5,] = survival_corrected_28
+tables_efficacy[6,arm_duration == 42] = survival_corrected_42
+tables_efficacy[tables_efficacy == "100 (100-100)"] = "100*"
+tables_efficacy[tables_efficacy == "100 (100–100)"] = "100*"
+rownames(tables_efficacy) = c("Uncorrected Kaplan-Meier estimate","Day 28","Day 42","PCR-corrected Kaplan-Meier estimate","Day 28","Day 42")
+
+write.csv(tables_efficacy,"output/tables_efficacy.csv")
+
+kbl(tables_efficacy, caption = "Table 5. Efficacy of first-line antimalarials in three therapeutic efficacy monitoring sites in Angola in 2021",escape=F) %>%
+    add_header_above(secondrow_labels) %>%
+add_header_above(firstrow_labels) %>%
+ kable_classic(full_width = F)%>%
+  add_indent(c(2:3,5:6), level_of_indent = 1, all_cols = FALSE)    %>%
+  footnote(general="*Confidence intervals are undefined\nPA: Pyronaridine artesunate; DP: Dihydroartemisinin piperaquine; AL: Artemether lumefantrine; ASAQ: Artesunate amodiaquine",general_title="")
+```
+## Conclusions
+
+* There was no clinical evidence of artemisinin resistance, since Day 3 slide-positive rates ranged from 98-100% across all study sites and arms.
+* This is the fourth of five rounds of TES in Angola showing a corrected AL efficacy below 90% in a site. For Zaire, AL has had an efficacy below 90% in 2013, 2015, and 2021.
+* ASAQ, DP, and PA all had corrected efficacies above 90% and the results suggest that they are appropriate choices for ACTs in Angola.
+
